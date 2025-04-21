@@ -34,12 +34,12 @@ Each step contains a Python script that can be run from the command line with ar
 Example Usage:
 Replace <args> with the appropriate command-line arguments as needed.
 
-Step 1:
+Part 1:
 ``` bash
-python src/step1/step1.py
+python solutions/part1/run.py
 ```
 
-Step 2:
+Part 2:
 ``` bash
-python src/step2/step2.py
+python solutions/part2/run.py
 ```
