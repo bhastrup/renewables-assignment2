@@ -1,0 +1,155 @@
+import os
+import random
+import numpy as np
+import pandas as pd
+import statistics
+from gurobipy import Model, GRB
+import os, glob
+from copy import deepcopy, copy
+from dataclasses import dataclass
+import random
+from typing import Optional
+
+import numpy as np
+import gurobipy as gp
+from gurobipy import GRB
+from matplotlib import pyplot as plt
+
+import os
+#print("Current working dir:", os.getcwd())
+#print("Script file dir:", os.path.dirname(os.path.abspath(__file__)))
+
+# Optional: verify
+#print("Current working directory:", os.getcwd())
+
+import sys
+import os
+
+# Add the folder where prep_data.py is located
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from prep_data import (
+    get_wind_forecast,
+    get_price_forecast,
+    get_system_condition,
+    combine_scenarios
+)
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def split_scenarios(scenarios, n_is) -> tuple[dict, dict]:
+    """ Split scenarios into in-sample and out-of-sample sets. """
+    idx_is = np.random.choice(list(scenarios.keys()), size=n_is, replace=False) # np.ndarray of shape (n_is,)
+    idx_oos = np.setdiff1d(list(scenarios.keys()), idx_is) # np.ndarray of shape (n_oos,)
+
+    scenarios_is = {idx: scenarios[idx] for idx in idx_is}
+    scenarios_oos = {idx: scenarios[idx] for idx in idx_oos}
+
+    return scenarios_is, scenarios_oos
+
+def get_var_as_array(scenarios: dict, var_name: str) -> np.ndarray:
+    if not isinstance(scenarios, dict):
+        raise TypeError("Expected a dictionary of scenarios (e.g. scenarios_is), but got:", type(scenarios))
+    return np.array([scenarios[k][var_name] for k in scenarios])
+
+
+@dataclass
+class ModelData:
+    n_scenarios: int
+    price: np.ndarray # (n_scenarios, T)
+    wind: np.ndarray # (n_scenarios, T)
+    c: np.ndarray # (n_scenarios, T)
+    w: float 
+    T: int 
+    balancing_coef_high: float
+    balancing_coef_low: float
+    max_capacity: float
+
+def run_1_price_risk(data: ModelData, alpha: float, beta: float):
+    model = Model("Risk-Averse One-Price Model")
+    model.setParam("OutputFlag", 0)
+
+    T = data.T
+    N = data.n_scenarios
+    prob = data.w
+
+    # Calculate balancing prices
+    price_Bal = data.price * (data.c * data.balancing_coef_low + (1 - data.c) * data.balancing_coef_high)
+
+    # Decision variables
+    p_DA = model.addVars(T, lb=0, ub=data.max_capacity, name="p_DA")
+    delta = model.addVars(T, N, name="delta")
+    zeta = model.addVar(name="zeta")
+    eta = model.addVars(N, lb=0, name="eta")
+
+    # Objective function: CVaR + Expected Profit
+    expected_profit = sum(
+        prob * (data.price[w, t] * p_DA[t] + price_Bal[w, t] * delta[t, w])
+        for w in range(N) for t in range(T)
+    )
+    cvar_term = beta * (zeta - (1 / (1 - alpha)) * sum(prob * eta[w] for w in range(N)))
+    model.setObjective((1 - beta) * expected_profit + cvar_term, GRB.MAXIMIZE)
+
+    # Constraints
+    for t in range(T):
+        model.addConstr(p_DA[t] <= data.max_capacity)
+        for w in range(N):
+            model.addConstr(delta[t, w] == data.wind[w, t] - p_DA[t])
+
+    for w in range(N):
+        model.addConstr(
+            -sum(data.price[w, t] * p_DA[t] + price_Bal[w, t] * delta[t, w] for t in range(T)) + zeta - eta[w] <= 0
+        )
+
+    # Solve
+    model.optimize()
+
+    # Extract CVaR value and objective value
+    cvar_value = zeta.X - (1 / (1 - alpha)) * sum(prob * eta[w].X for w in range(N))
+    obj_value = model.ObjVal
+
+    return cvar_value, obj_value
+
+# Beta range: 0.0 to 1.0 in steps of 0.1
+alpha = 0.9
+beta_values = np.round(np.arange(0.0, 1.01, 0.1), 3)
+
+# Storage for results
+results = []
+
+scenarios = combine_scenarios(wind, price, system)
+scenarios_is, _ = split_scenarios(scenarios, n_is=200)
+
+#creating an instance
+data = ModelData(
+    n_scenarios=200,
+    price = get_var_as_array(scenarios_is, "price_forecast"),
+    wind = get_var_as_array(scenarios_is, "wind_forecast"),
+    c = get_var_as_array(scenarios_is, "system_condition"),
+    w=1 / 200,
+    T=24,
+    balancing_coef_high=1.2,
+    balancing_coef_low=0.9,
+    max_capacity=500
+)
+# Loop over beta values
+for beta in beta_values:
+    print(f"Running for beta = {beta}")
+
+    # Call your model function (returns CVaR and objective value)
+    cvar, obj = run_1_price_risk(data, alpha, beta)
+
+    # Append results
+    results.append({
+        "alpha": alpha,
+        "beta": beta,
+        "CVaR": cvar,
+        "objective": obj
+    })
+
+# Save results to CSV
+df = pd.DataFrame(results)
+df.to_csv("outputs/step_1_4_1price_withfactor.csv", index=False)
+
