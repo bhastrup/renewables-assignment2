@@ -130,8 +130,8 @@ data = ModelData(
     c = get_var_as_array(scenarios_is, "system_condition"),
     w=1 / 200,
     T=24,
-    balancing_coef_high=1.2,
-    balancing_coef_low=0.9,
+    balancing_coef_high: float = 1.25,
+    balancing_coef_low: float = 0.85
     max_capacity=500
 )
 # Loop over beta values
